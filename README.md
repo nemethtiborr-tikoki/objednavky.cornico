@@ -36,6 +36,8 @@ http://localhost:3000
 - historia objednavok pre zakaznika
 - zakaznicky profil s firemnymi udajmi, telefonom, menom objednavajuceho a nazvom prevadzky
 - administracia tovarovych poloziek
+- filter a radenie zoznamu tovarovych poloziek podla stlpcov
+- import tovarovych poloziek z CSV s kontrolou duplicit a moznostou prepisu
 - administracia zakaznikov
 - historia objednavok pre administratora
 - uvodny admin prehlad so sumarom novych objednavok
@@ -56,6 +58,17 @@ Kazda polozka obsahuje:
 - hmotnost
 - cenu
 - aktivitu polozky
+
+## Import tovaru z CSV
+
+V administracii v casti `Tovarove polozky` je mozne importovat CSV subor. Podporovane hlavicky:
+
+```csv
+cislo karty;nazov;merna jednotka;hmotnost;cena;aktivna
+1001;Hladka muka special;kg;1;0,89;ano
+```
+
+Duplicitne polozky sa kontroluju podla `cislo karty`. Pri importe si administrator vyberie, ci existujuce polozky preskocit alebo prepisat.
 
 ## Zakaznicky profil
 

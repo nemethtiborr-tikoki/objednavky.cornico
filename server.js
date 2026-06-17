@@ -245,6 +245,17 @@ function cleanOrderStatus(value, fallback = "nova") {
   return ["nova", "spracovava_sa", "vybavena"].includes(status) ? status : fallback;
 }
 
+function cleanProductPayload(body) {
+  return {
+    cardNumber: cleanText(body.cardNumber),
+    name: cleanText(body.name),
+    unit: cleanText(body.unit),
+    weight: cleanNumber(body.weight),
+    price: cleanNumber(body.price),
+    active: body.active !== false
+  };
+}
+
 function orderTotal(order) {
   return order.items.reduce((sum, item) => sum + item.quantity * item.price, 0);
 }
@@ -442,16 +453,58 @@ async function handleApi(req, res) {
       const db = readDb();
       const product = {
         id: crypto.randomUUID(),
-        cardNumber: cleanText(body.cardNumber),
-        name: cleanText(body.name),
-        unit: cleanText(body.unit),
-        weight: cleanNumber(body.weight),
-        price: cleanNumber(body.price),
-        active: body.active !== false
+        ...cleanProductPayload(body)
       };
+      if (!product.cardNumber || !product.name) {
+        return sendJson(res, 400, { error: "Cislo karty a nazov su povinne." });
+      }
       db.products.push(product);
       writeDb(db);
       return sendJson(res, 201, { product });
+    }
+
+    if (method === "POST" && url.pathname === "/api/products/import") {
+      if (!requireAdmin(req, res)) return;
+      const body = await readBody(req);
+      const overwrite = body.overwrite === true;
+      const incomingProducts = Array.isArray(body.products) ? body.products : [];
+      const db = readDb();
+      const result = {
+        imported: 0,
+        updated: 0,
+        skipped: 0,
+        invalid: 0,
+        duplicates: []
+      };
+
+      for (const rawProduct of incomingProducts) {
+        const productData = cleanProductPayload(rawProduct);
+        if (!productData.cardNumber || !productData.name) {
+          result.invalid += 1;
+          continue;
+        }
+
+        const existing = db.products.find(product => product.cardNumber === productData.cardNumber);
+        if (existing) {
+          result.duplicates.push(productData.cardNumber);
+          if (!overwrite) {
+            result.skipped += 1;
+            continue;
+          }
+          Object.assign(existing, productData);
+          result.updated += 1;
+          continue;
+        }
+
+        db.products.push({
+          id: crypto.randomUUID(),
+          ...productData
+        });
+        result.imported += 1;
+      }
+
+      writeDb(db);
+      return sendJson(res, 200, { result, products: db.products });
     }
 
     if (method === "PUT" && url.pathname.startsWith("/api/products/")) {
@@ -461,12 +514,7 @@ async function handleApi(req, res) {
       const db = readDb();
       const product = db.products.find(item => item.id === id);
       if (!product) return sendJson(res, 404, { error: "Polozka neexistuje." });
-      product.cardNumber = cleanText(body.cardNumber);
-      product.name = cleanText(body.name);
-      product.unit = cleanText(body.unit);
-      product.weight = cleanNumber(body.weight);
-      product.price = cleanNumber(body.price);
-      product.active = body.active !== false;
+      Object.assign(product, cleanProductPayload(body));
       writeDb(db);
       return sendJson(res, 200, { product });
     }

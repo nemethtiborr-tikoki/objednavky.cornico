@@ -19,6 +19,16 @@ let state = {
     maxTotal: ""
   },
   orderSort: { key: "date", direction: "desc" },
+  productFilterOpen: false,
+  productFilters: {
+    query: "",
+    active: "",
+    minWeight: "",
+    maxWeight: "",
+    minPrice: "",
+    maxPrice: ""
+  },
+  productSort: { key: "cardNumber", direction: "asc" },
   message: "",
   error: "",
   printOrder: null
@@ -48,6 +58,14 @@ const defaultOrderFilters = () => ({
   maxWeight: "",
   minTotal: "",
   maxTotal: ""
+});
+const defaultProductFilters = () => ({
+  query: "",
+  active: "",
+  minWeight: "",
+  maxWeight: "",
+  minPrice: "",
+  maxPrice: ""
 });
 const escapeHtml = value => String(value || "")
   .replaceAll("&", "&amp;")
@@ -209,6 +227,9 @@ async function logout() {
     orderFilterOpen: false,
     orderFilters: defaultOrderFilters(),
     orderSort: { key: "date", direction: "desc" },
+    productFilterOpen: false,
+    productFilters: defaultProductFilters(),
+    productSort: { key: "cardNumber", direction: "asc" },
     message: "",
     error: "",
     printOrder: null
@@ -654,21 +675,294 @@ function renderOrderPanel(order, isAdmin) {
 }
 
 function renderProductsAdmin() {
+  const visibleProducts = filteredSortedProducts();
   const container = el("section", { class: "grid" }, [
     pageTitle("Tovarove polozky", "Sprava sortimentu pre objednavky."),
     renderProductForm(),
+    renderProductImport(),
+    renderProductFilters(visibleProducts.length),
     renderNotice()
   ]);
 
   const tbody = el("tbody");
-  for (const product of state.products) {
+  for (const product of visibleProducts) {
     tbody.append(renderProductRow(product));
   }
+  if (!visibleProducts.length) {
+    tbody.append(el("tr", {}, el("td", { colspan: "7", class: "muted", text: "Filtru nevyhovuje ziadna tovarova polozka." })));
+  }
   container.append(el("div", { class: "table-wrap" }, el("table", {}, [
-    tableHead(["Cislo karty", "Nazov", "MJ", "Hmotnost", "Cena", "Aktivna", "Akcie"]),
+    sortableProductHead(),
     tbody
   ])));
   return container;
+}
+
+function productSearchText(product) {
+  return [
+    product.cardNumber,
+    product.name,
+    product.unit,
+    product.weight,
+    product.price,
+    product.active ? "aktivna ano" : "neaktivna nie"
+  ].join(" ").toLowerCase();
+}
+
+function filteredSortedProducts() {
+  const filters = state.productFilters;
+  const query = filters.query.trim().toLowerCase();
+  const minWeight = filters.minWeight === "" ? null : Number(filters.minWeight);
+  const maxWeight = filters.maxWeight === "" ? null : Number(filters.maxWeight);
+  const minPrice = filters.minPrice === "" ? null : Number(filters.minPrice);
+  const maxPrice = filters.maxPrice === "" ? null : Number(filters.maxPrice);
+
+  return [...state.products]
+    .filter(product => {
+      if (query && !productSearchText(product).includes(query)) return false;
+      if (filters.active === "true" && !product.active) return false;
+      if (filters.active === "false" && product.active) return false;
+      if (minWeight !== null && Number(product.weight) < minWeight) return false;
+      if (maxWeight !== null && Number(product.weight) > maxWeight) return false;
+      if (minPrice !== null && Number(product.price) < minPrice) return false;
+      if (maxPrice !== null && Number(product.price) > maxPrice) return false;
+      return true;
+    })
+    .sort((a, b) => compareProducts(a, b, state.productSort.key) * (state.productSort.direction === "asc" ? 1 : -1));
+}
+
+function compareProducts(a, b, key) {
+  const values = {
+    cardNumber: [a.cardNumber, b.cardNumber],
+    name: [a.name, b.name],
+    unit: [a.unit, b.unit],
+    weight: [Number(a.weight), Number(b.weight)],
+    price: [Number(a.price), Number(b.price)],
+    active: [a.active ? 1 : 0, b.active ? 1 : 0]
+  }[key] || [a.cardNumber, b.cardNumber];
+  if (typeof values[0] === "number" && typeof values[1] === "number") return values[0] - values[1];
+  return String(values[0] || "").localeCompare(String(values[1] || ""), "sk", { numeric: true, sensitivity: "base" });
+}
+
+function renderProductFilters(count) {
+  const panel = el("section", { class: "panel grid" });
+  panel.append(el("div", { class: "toolbar" }, [
+    el("div", {}, [
+      el("strong", { text: "Filter tovaru" }),
+      el("div", { class: "muted", text: `Zobrazenych ${count} z ${state.products.length}` })
+    ]),
+    el("button", {
+      class: "secondary",
+      text: state.productFilterOpen ? "Skryt filter" : "Rozbalit filter",
+      onclick: () => {
+        state.productFilterOpen = !state.productFilterOpen;
+        render();
+      }
+    })
+  ]));
+
+  if (!state.productFilterOpen) return panel;
+
+  const filters = state.productFilters;
+  const form = el("form", { class: "form-grid" });
+  form.innerHTML = `
+    <label class="span-6">Vyhladavanie v tovare
+      <input name="query" value="${escapeHtml(filters.query)}" placeholder="cislo karty, nazov, MJ, cena, hmotnost...">
+    </label>
+    <label class="span-2">Aktivita
+      <select name="active">
+        <option value="">vsetky</option>
+        <option value="true" ${filters.active === "true" ? "selected" : ""}>aktivne</option>
+        <option value="false" ${filters.active === "false" ? "selected" : ""}>neaktivne</option>
+      </select>
+    </label>
+    <label class="span-2">Hmotnost od<input name="minWeight" type="number" step="0.01" value="${escapeHtml(filters.minWeight)}"></label>
+    <label class="span-2">Hmotnost do<input name="maxWeight" type="number" step="0.01" value="${escapeHtml(filters.maxWeight)}"></label>
+    <label class="span-2">Cena od<input name="minPrice" type="number" step="0.01" value="${escapeHtml(filters.minPrice)}"></label>
+    <label class="span-2">Cena do<input name="maxPrice" type="number" step="0.01" value="${escapeHtml(filters.maxPrice)}"></label>
+    <div class="span-6 actions">
+      <button type="submit">Pouzit filter</button>
+      <button class="secondary" type="button" data-reset="true">Vycistit filter</button>
+    </div>
+  `;
+  form.addEventListener("submit", event => {
+    event.preventDefault();
+    state.productFilters = Object.fromEntries(new FormData(form));
+    render();
+  });
+  form.querySelector("[data-reset]").addEventListener("click", () => {
+    state.productFilters = defaultProductFilters();
+    render();
+  });
+  panel.append(form);
+  return panel;
+}
+
+function sortableProductHead() {
+  const columns = [
+    ["cardNumber", "Cislo karty"],
+    ["name", "Nazov"],
+    ["unit", "MJ"],
+    ["weight", "Hmotnost"],
+    ["price", "Cena"],
+    ["active", "Aktivna"]
+  ];
+  return el("thead", {}, el("tr", {}, [
+    ...columns.map(([key, label]) => {
+      const active = state.productSort.key === key;
+      const direction = active ? (state.productSort.direction === "asc" ? " ▲" : " ▼") : "";
+      return el("th", {}, el("button", {
+        class: `sort-button ${active ? "active" : ""}`,
+        text: `${label}${direction}`,
+        onclick: () => {
+          if (state.productSort.key === key) {
+            state.productSort.direction = state.productSort.direction === "asc" ? "desc" : "asc";
+          } else {
+            state.productSort = { key, direction: ["weight", "price"].includes(key) ? "desc" : "asc" };
+          }
+          render();
+        }
+      }));
+    }),
+    el("th", { text: "Akcie" })
+  ]));
+}
+
+function renderProductImport() {
+  const form = el("form", { class: "panel form-grid" });
+  form.innerHTML = `
+    <label class="span-3">CSV subor s tovarom
+      <input name="csvFile" type="file" accept=".csv,text/csv" required>
+    </label>
+    <label class="span-2">Duplicity podla cisla karty
+      <select name="overwrite">
+        <option value="false">preskocit existujuce</option>
+        <option value="true">prepisat existujuce</option>
+      </select>
+    </label>
+    <div class="span-6 muted">
+      CSV hlavicky: cislo karty, nazov, merna jednotka, hmotnost, cena, aktivna. Podporovane su aj nazvy cardNumber, name, unit, weight, price, active.
+    </div>
+    <div class="span-6 actions">
+      <button type="submit">Importovat CSV</button>
+    </div>
+  `;
+  form.addEventListener("submit", async event => {
+    event.preventDefault();
+    const file = form.csvFile.files[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const products = parseProductsCsv(text);
+      if (!products.length) {
+        setMessage("", "CSV neobsahuje ziadne platne riadky.");
+        return;
+      }
+      const overwrite = form.overwrite.value === "true";
+      const { result, products: updatedProducts } = await api("/api/products/import", {
+        method: "POST",
+        body: JSON.stringify({ overwrite, products })
+      });
+      state.products = updatedProducts;
+      const duplicateText = result.duplicates.length ? ` Duplicity: ${result.duplicates.join(", ")}.` : "";
+      setMessage(`Import hotovy. Nove: ${result.imported}, prepisane: ${result.updated}, preskocene: ${result.skipped}, neplatne: ${result.invalid}.${duplicateText}`);
+      form.reset();
+    } catch (error) {
+      setMessage("", error.message);
+    }
+  });
+  return form;
+}
+
+function parseProductsCsv(text) {
+  const rows = parseCsvRows(text).filter(row => row.some(value => String(value || "").trim()));
+  if (rows.length < 2) return [];
+  const headers = rows[0].map(header => normalizeCsvHeader(header));
+  return rows.slice(1).map(row => {
+    const raw = {};
+    headers.forEach((header, index) => {
+      if (header) raw[header] = row[index] || "";
+    });
+    return {
+      cardNumber: raw.cardNumber,
+      name: raw.name,
+      unit: raw.unit,
+      weight: parseCsvNumber(raw.weight),
+      price: parseCsvNumber(raw.price),
+      active: parseCsvBoolean(raw.active)
+    };
+  });
+}
+
+function parseCsvRows(text) {
+  const rows = [];
+  let row = [];
+  let value = "";
+  let quoted = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    const next = text[index + 1];
+    if (char === '"' && quoted && next === '"') {
+      value += '"';
+      index += 1;
+    } else if (char === '"') {
+      quoted = !quoted;
+    } else if ((char === ";" || char === ",") && !quoted) {
+      row.push(value.trim());
+      value = "";
+    } else if ((char === "\n" || char === "\r") && !quoted) {
+      if (char === "\r" && next === "\n") index += 1;
+      row.push(value.trim());
+      rows.push(row);
+      row = [];
+      value = "";
+    } else {
+      value += char;
+    }
+  }
+
+  row.push(value.trim());
+  rows.push(row);
+  return rows;
+}
+
+function normalizeCsvHeader(header) {
+  const value = String(header || "").trim().toLowerCase();
+  return {
+    "cislo karty": "cardNumber",
+    "číslo karty": "cardNumber",
+    "cardnumber": "cardNumber",
+    "card_number": "cardNumber",
+    "karta": "cardNumber",
+    "nazov": "name",
+    "názov": "name",
+    "name": "name",
+    "merna jednotka": "unit",
+    "merná jednotka": "unit",
+    "mj": "unit",
+    "unit": "unit",
+    "hmotnost": "weight",
+    "hmotnosť": "weight",
+    "weight": "weight",
+    "cena": "price",
+    "price": "price",
+    "aktivna": "active",
+    "aktívna": "active",
+    "active": "active"
+  }[value] || "";
+}
+
+function parseCsvNumber(value) {
+  const normalized = String(value || "").replace(/\s/g, "").replace(",", ".");
+  const number = Number(normalized);
+  return Number.isFinite(number) ? number : 0;
+}
+
+function parseCsvBoolean(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (["nie", "false", "0", "neaktivna", "neaktívna"].includes(normalized)) return false;
+  return true;
 }
 
 function renderProfile() {
