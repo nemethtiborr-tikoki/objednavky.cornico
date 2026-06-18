@@ -849,8 +849,10 @@ function renderProductImport() {
     </div>
     <div class="span-6 actions">
       <button type="submit">Importovat CSV</button>
+      <button class="secondary" type="button" data-export="true">Exportovat vsetky polozky</button>
     </div>
   `;
+  form.querySelector("[data-export]").addEventListener("click", exportProductsCsv);
   form.addEventListener("submit", async event => {
     event.preventDefault();
     const file = form.csvFile.files[0];
@@ -876,6 +878,33 @@ function renderProductImport() {
     }
   });
   return form;
+}
+
+function exportProductsCsv() {
+  const csvValue = value => `"${String(value ?? "").replaceAll('"', '""')}"`;
+  const csvNumber = value => Number(value || 0).toFixed(2).replace(".", ",");
+  const rows = [
+    ["cislo karty", "nazov", "merna jednotka", "hmotnost", "cena", "aktivna"],
+    ...state.products.map(product => [
+      product.cardNumber,
+      product.name,
+      product.unit,
+      csvNumber(product.weight),
+      csvNumber(product.price),
+      product.active ? "ano" : "nie"
+    ])
+  ];
+  const csv = `\uFEFF${rows.map(row => row.map(csvValue).join(";")).join("\r\n")}`;
+  const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+  const link = el("a", {
+    href: url,
+    download: `cornico-tovar-${new Date().toISOString().slice(0, 10)}.csv`
+  });
+  document.body.append(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+  setMessage(`Exportovanych poloziek: ${state.products.length}.`);
 }
 
 function parseProductsCsv(text) {
