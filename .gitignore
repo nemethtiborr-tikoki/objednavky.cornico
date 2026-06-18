@@ -4,3 +4,5 @@ node_modules/
 # Local runtime data
 data/*.log
 data/db.json
+data/*.sqlite
+data/*.sqlite-*

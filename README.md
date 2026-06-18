@@ -22,6 +22,16 @@ Potom otvorte:
 http://localhost:3000
 ```
 
+## Databaza
+
+System pouziva SQLite databazu v subore:
+
+```text
+data/app.sqlite
+```
+
+Pri prvom spusteni sa existujuce data z povodneho suboru `data/db.json` automaticky prenesu do SQLite. Subor `data/db.json` potom ostava len ako povodna zaloha/migracny zdroj; nove zmeny sa zapisuju do `data/app.sqlite`.
+
 ## Demo ucty
 
 - Zakaznik: `zakaznik` / `zakaznik123`

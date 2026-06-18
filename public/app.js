@@ -141,8 +141,9 @@ function render() {
 function renderLogin() {
   const form = el("form", { class: "login-panel grid" });
   form.innerHTML = `
-    <div>
-      <h1>Objednavaci system</h1>
+    <div class="login-heading">
+      <img class="login-logo" src="/assets/cornico-logo.png" alt="CORNiCO Snack Food Service" onerror="this.hidden=true">
+      <h1>Objednávkový systém CORNiCO</h1>
       <p class="muted">Prihlasenie zakaznika alebo administratora.</p>
     </div>
     <label>Prihlasovacie meno<input name="username" autocomplete="username" required value="zakaznik"></label>
@@ -178,7 +179,10 @@ function renderShell() {
 
   shell.append(
     el("header", { class: "topbar" }, [
-      el("div", { class: "brand" }, [el("span", { class: "brand-mark", text: "O" }), "Online objednavky"]),
+      el("div", { class: "brand" }, [
+        el("img", { class: "brand-logo", src: "/assets/cornico-logo.png", alt: "CORNiCO", onerror: event => event.currentTarget.hidden = true }),
+        el("span", { class: "brand-title", text: "Objednávkový systém CORNiCO" })
+      ]),
       el("div", { class: "userbar" }, [
         `${state.user.name} (${state.user.role === "admin" ? "administrator" : "zakaznik"})`,
         el("button", { class: "secondary", onclick: logout, text: "Odhlasit" })
@@ -1217,6 +1221,7 @@ function printOrder(order) {
 
 function renderPrintOrder(order) {
   return el("section", { class: "order-print" }, [
+    el("img", { class: "print-logo", src: "/assets/cornico-logo.png", alt: "CORNiCO", onerror: event => event.currentTarget.hidden = true }),
     el("h1", { text: `Objednavka ${order.number}` }),
     el("p", { text: `Zakaznik: ${order.customerName} | ${order.customerEmail}` }),
     el("p", { text: `Datum: ${dateTime(order.createdAt)}` }),

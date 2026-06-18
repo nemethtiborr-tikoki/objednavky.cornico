@@ -2,12 +2,15 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+process.env.NODE_NO_WARNINGS = "1";
+const { DatabaseSync } = require("node:sqlite");
 
 const PORT = process.env.PORT || 3000;
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, "public");
 const DATA_DIR = path.join(ROOT, "data");
-const DB_PATH = path.join(DATA_DIR, "db.json");
+const DB_PATH = path.join(DATA_DIR, "app.sqlite");
+const JSON_DB_PATH = path.join(DATA_DIR, "db.json");
 const EMAIL_LOG_PATH = path.join(DATA_DIR, "emails.log");
 
 const sessions = new Map();
@@ -79,18 +82,270 @@ const initialDb = {
 
 function ensureData() {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-  if (!fs.existsSync(DB_PATH)) {
-    fs.writeFileSync(DB_PATH, JSON.stringify(initialDb, null, 2), "utf8");
+  const shouldSeed = !fs.existsSync(DB_PATH);
+  const db = openSqlite();
+  createSchema(db);
+  const existing = db.prepare("SELECT COUNT(*) AS count FROM users").get().count;
+  db.close();
+
+  if (shouldSeed || existing === 0) {
+    const sourceDb = fs.existsSync(JSON_DB_PATH)
+      ? JSON.parse(fs.readFileSync(JSON_DB_PATH, "utf8"))
+      : initialDb;
+    writeDb(sourceDb);
   }
 }
 
 function readDb() {
   ensureData();
-  return JSON.parse(fs.readFileSync(DB_PATH, "utf8"));
+  const db = openSqlite();
+  try {
+    const settingsRows = db.prepare("SELECT key, value FROM settings").all();
+    const settings = Object.fromEntries(settingsRows.map(row => [row.key, row.value]));
+    const users = db.prepare(`
+      SELECT id, name, email, username, password, role,
+        company_name AS companyName,
+        company_id AS companyId,
+        tax_id AS taxId,
+        vat_id AS vatId,
+        phone,
+        ordering_person AS orderingPerson,
+        operation_name AS operationName,
+        address
+      FROM users
+      ORDER BY role, name
+    `).all().map(row => ({
+      id: row.id,
+      name: row.name,
+      email: row.email,
+      username: row.username,
+      password: row.password,
+      role: row.role,
+      profile: {
+        companyName: row.companyName || "",
+        companyId: row.companyId || "",
+        taxId: row.taxId || "",
+        vatId: row.vatId || "",
+        phone: row.phone || "",
+        orderingPerson: row.orderingPerson || "",
+        operationName: row.operationName || "",
+        address: row.address || ""
+      }
+    }));
+    const products = db.prepare(`
+      SELECT id, card_number AS cardNumber, name, unit, weight, price, active
+      FROM products
+      ORDER BY card_number
+    `).all().map(row => ({
+      ...row,
+      active: Boolean(row.active)
+    }));
+    const orders = db.prepare(`
+      SELECT id, number, customer_id AS customerId, customer_name AS customerName,
+        customer_email AS customerEmail, customer_profile AS customerProfile,
+        note, status, created_at AS createdAt, updated_at AS updatedAt
+      FROM orders
+      ORDER BY datetime(created_at) DESC, number DESC
+    `).all().map(row => ({
+      ...row,
+      customerProfile: row.customerProfile ? JSON.parse(row.customerProfile) : emptyProfile(),
+      items: []
+    }));
+    const orderItems = db.prepare(`
+      SELECT order_id AS orderId, product_id AS productId, card_number AS cardNumber,
+        name, unit, weight, price, quantity
+      FROM order_items
+      ORDER BY rowid
+    `).all();
+    const orderById = new Map(orders.map(order => [order.id, order]));
+    for (const item of orderItems) {
+      const order = orderById.get(item.orderId);
+      if (!order) continue;
+      delete item.orderId;
+      order.items.push(item);
+    }
+    return { settings, users, products, orders };
+  } finally {
+    db.close();
+  }
 }
 
 function writeDb(db) {
-  fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2), "utf8");
+  ensureDataDirectoryOnly();
+  const sqlite = openSqlite();
+  createSchema(sqlite);
+  try {
+    sqlite.exec("BEGIN IMMEDIATE");
+    sqlite.exec("DELETE FROM order_items");
+    sqlite.exec("DELETE FROM orders");
+    sqlite.exec("DELETE FROM products");
+    sqlite.exec("DELETE FROM users");
+    sqlite.exec("DELETE FROM settings");
+
+    const insertSetting = sqlite.prepare("INSERT INTO settings (key, value) VALUES (?, ?)");
+    for (const [key, value] of Object.entries(db.settings || {})) {
+      insertSetting.run(key, String(value ?? ""));
+    }
+
+    const insertUser = sqlite.prepare(`
+      INSERT INTO users (
+        id, name, email, username, password, role,
+        company_name, company_id, tax_id, vat_id, phone, ordering_person, operation_name, address
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    for (const user of db.users || []) {
+      const profile = user.profile || emptyProfile();
+      insertUser.run(
+        user.id,
+        user.name,
+        user.email,
+        user.username,
+        user.password,
+        user.role,
+        profile.companyName || "",
+        profile.companyId || "",
+        profile.taxId || "",
+        profile.vatId || "",
+        profile.phone || "",
+        profile.orderingPerson || "",
+        profile.operationName || "",
+        profile.address || ""
+      );
+    }
+
+    const insertProduct = sqlite.prepare(`
+      INSERT INTO products (id, card_number, name, unit, weight, price, active)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+    for (const product of db.products || []) {
+      insertProduct.run(
+        product.id,
+        product.cardNumber,
+        product.name,
+        product.unit,
+        cleanNumber(product.weight),
+        cleanNumber(product.price),
+        product.active === false ? 0 : 1
+      );
+    }
+
+    const insertOrder = sqlite.prepare(`
+      INSERT INTO orders (
+        id, number, customer_id, customer_name, customer_email, customer_profile,
+        note, status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const insertOrderItem = sqlite.prepare(`
+      INSERT INTO order_items (
+        order_id, product_id, card_number, name, unit, weight, price, quantity
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    for (const order of db.orders || []) {
+      insertOrder.run(
+        order.id,
+        order.number,
+        order.customerId,
+        order.customerName,
+        order.customerEmail,
+        JSON.stringify(order.customerProfile || emptyProfile()),
+        order.note || "",
+        order.status || "nova",
+        order.createdAt,
+        order.updatedAt
+      );
+      for (const item of order.items || []) {
+        insertOrderItem.run(
+          order.id,
+          item.productId,
+          item.cardNumber,
+          item.name,
+          item.unit,
+          cleanNumber(item.weight),
+          cleanNumber(item.price),
+          cleanQuantity(item.quantity)
+        );
+      }
+    }
+
+    sqlite.exec("COMMIT");
+  } catch (error) {
+    try {
+      sqlite.exec("ROLLBACK");
+    } catch (_) {
+      // Transaction may already be closed.
+    }
+    throw error;
+  } finally {
+    sqlite.close();
+  }
+}
+
+function ensureDataDirectoryOnly() {
+  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+
+function openSqlite() {
+  ensureDataDirectoryOnly();
+  return new DatabaseSync(DB_PATH);
+}
+
+function createSchema(db) {
+  db.exec(`
+    PRAGMA foreign_keys = ON;
+    CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      email TEXT NOT NULL,
+      username TEXT NOT NULL UNIQUE,
+      password TEXT NOT NULL,
+      role TEXT NOT NULL,
+      company_name TEXT DEFAULT '',
+      company_id TEXT DEFAULT '',
+      tax_id TEXT DEFAULT '',
+      vat_id TEXT DEFAULT '',
+      phone TEXT DEFAULT '',
+      ordering_person TEXT DEFAULT '',
+      operation_name TEXT DEFAULT '',
+      address TEXT DEFAULT ''
+    );
+    CREATE TABLE IF NOT EXISTS products (
+      id TEXT PRIMARY KEY,
+      card_number TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      unit TEXT DEFAULT '',
+      weight REAL DEFAULT 0,
+      price REAL DEFAULT 0,
+      active INTEGER DEFAULT 1
+    );
+    CREATE TABLE IF NOT EXISTS orders (
+      id TEXT PRIMARY KEY,
+      number TEXT NOT NULL UNIQUE,
+      customer_id TEXT,
+      customer_name TEXT NOT NULL,
+      customer_email TEXT NOT NULL,
+      customer_profile TEXT DEFAULT '{}',
+      note TEXT DEFAULT '',
+      status TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS order_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      order_id TEXT NOT NULL,
+      product_id TEXT,
+      card_number TEXT NOT NULL,
+      name TEXT NOT NULL,
+      unit TEXT DEFAULT '',
+      weight REAL DEFAULT 0,
+      price REAL DEFAULT 0,
+      quantity INTEGER DEFAULT 0,
+      FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE
+    );
+  `);
 }
 
 function sendJson(res, status, data) {
