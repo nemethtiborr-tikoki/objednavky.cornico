@@ -2,6 +2,7 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const Busboy = require("busboy");
 const db = require("./database");
 const { verifyPassword, hashSessionToken } = require("./auth");
 const { sendOrderEmails, verifyEmailSettings, emailErrorMessage } = require("./email");
@@ -12,6 +13,8 @@ const PUBLIC_DIR = path.join(ROOT, "public");
 const DATA_DIR = path.join(ROOT, "data");
 const EMAIL_LOG_PATH = path.join(DATA_DIR, "emails.log");
 const SESSION_MAX_AGE_SECONDS = 7 * 24 * 60 * 60;
+const MAX_ATTACHMENT_SIZE = 30 * 1024 * 1024;
+const MAX_UPLOAD_SIZE = 100 * 1024 * 1024;
 const loginAttempts = new Map();
 
 function sendJson(res, status, data) {
@@ -44,6 +47,77 @@ function readBody(req) {
       }
     });
   });
+}
+
+function safeFilename(value) {
+  const filename = path.basename(String(value || "priloha")).replace(/[\x00-\x1f\x7f]/g, "").trim();
+  return (filename || "priloha").slice(0, 240);
+}
+
+function detectPreviewImage(buffer) {
+  if (buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return "image/png";
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return "image/jpeg";
+  if (buffer.length >= 6 && ["GIF87a", "GIF89a"].includes(buffer.subarray(0, 6).toString("ascii"))) return "image/gif";
+  if (buffer.length >= 12 && buffer.subarray(0, 4).toString("ascii") === "RIFF" && buffer.subarray(8, 12).toString("ascii") === "WEBP") return "image/webp";
+  if (buffer.length >= 2 && buffer.subarray(0, 2).toString("ascii") === "BM") return "image/bmp";
+  if (buffer.length >= 12 && buffer.subarray(4, 12).toString("ascii").includes("ftypavif")) return "image/avif";
+  return "";
+}
+
+function readAnnouncementUpload(req) {
+  return new Promise((resolve, reject) => {
+    let parser;
+    try {
+      parser = Busboy({ headers: req.headers, limits: { fileSize: MAX_ATTACHMENT_SIZE, files: 10, fields: 10, parts: 20 } });
+    } catch (_) {
+      reject(Object.assign(new Error("Neplatny format nahravania."), { statusCode: 400 }));
+      return;
+    }
+    const fields = {};
+    const attachments = [];
+    let uploadSize = 0;
+    let uploadError = null;
+
+    parser.on("field", (name, value) => {
+      fields[name] = value;
+    });
+    parser.on("file", (_name, stream, info) => {
+      const chunks = [];
+      let truncated = false;
+      stream.on("limit", () => { truncated = true; });
+      stream.on("data", chunk => {
+        uploadSize += chunk.length;
+        if (uploadSize > MAX_UPLOAD_SIZE) uploadError = Object.assign(new Error("Celkova velkost priloh v jednom zverejneni je prilis velka."), { statusCode: 413 });
+        if (!uploadError) chunks.push(chunk);
+      });
+      stream.on("end", () => {
+        if (truncated) {
+          uploadError = Object.assign(new Error(`Subor ${safeFilename(info.filename)} prekrocil limit 30 MB.`), { statusCode: 413 });
+          return;
+        }
+        if (uploadError) return;
+        const data = Buffer.concat(chunks);
+        if (!data.length) return;
+        const imageMime = detectPreviewImage(data);
+        attachments.push({
+          filename: safeFilename(info.filename),
+          mimeType: imageMime || cleanText(info.mimeType) || "application/octet-stream",
+          previewable: Boolean(imageMime),
+          data
+        });
+      });
+    });
+    parser.on("filesLimit", () => { uploadError = Object.assign(new Error("Naraz je mozne vlozit najviac 10 priloh."), { statusCode: 413 }); });
+    parser.on("partsLimit", () => { uploadError = Object.assign(new Error("Nahravanie obsahuje prilis vela casti."), { statusCode: 413 }); });
+    parser.on("error", error => reject(Object.assign(error, { statusCode: 400 })));
+    parser.on("close", () => uploadError ? reject(uploadError) : resolve({ fields, attachments }));
+    req.pipe(parser);
+  });
+}
+
+function attachmentDisposition(filename, inline = false) {
+  const fallback = safeFilename(filename).replace(/[^a-zA-Z0-9._-]/g, "_");
+  return `${inline ? "inline" : "attachment"}; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(safeFilename(filename))}`;
 }
 
 function parseCookies(req) {
@@ -368,13 +442,33 @@ async function handleApi(req, res) {
       return sendJson(res, 200, { announcements: await db.listAnnouncements(user.role === "admin") });
     }
 
+    const attachmentPath = url.pathname.match(/^\/api\/announcement-attachments\/([^/]+)(\/preview)?$/);
+    if (method === "GET" && attachmentPath) {
+      const user = await requireUser(req, res);
+      if (!user) return;
+      const attachment = await db.getAnnouncementAttachment(attachmentPath[1], user);
+      const inline = Boolean(attachmentPath[2]);
+      if (!attachment || (inline && !attachment.previewable)) return sendJson(res, 404, { error: "Priloha neexistuje." });
+      res.writeHead(200, {
+        "Content-Type": attachment.mimeType,
+        "Content-Length": attachment.data.length,
+        "Content-Disposition": attachmentDisposition(attachment.filename, inline),
+        "Cache-Control": "private, max-age=300",
+        "X-Content-Type-Options": "nosniff"
+      });
+      res.end(attachment.data);
+      return;
+    }
+
     if (method === "POST" && url.pathname === "/api/announcements") {
       const admin = await requireAdmin(req, res);
       if (!admin) return;
-      const announcement = cleanAnnouncementPayload(await readBody(req));
+      const contentType = cleanText(req.headers["content-type"]);
+      const upload = contentType.startsWith("multipart/form-data") ? await readAnnouncementUpload(req) : { fields: await readBody(req), attachments: [] };
+      const announcement = cleanAnnouncementPayload(upload.fields);
       if (!announcement.title || !announcement.content) return sendJson(res, 400, { error: "Nadpis a text informacie su povinne." });
       if (announcement.title.length > 160 || announcement.content.length > 10_000) return sendJson(res, 400, { error: "Nadpis alebo text informacie je prilis dlhy." });
-      return sendJson(res, 201, { announcement: await db.createAnnouncement(announcement, admin) });
+      return sendJson(res, 201, { announcement: await db.createAnnouncement(announcement, admin, upload.attachments) });
     }
 
     if (method === "PUT" && url.pathname.startsWith("/api/announcements/")) {

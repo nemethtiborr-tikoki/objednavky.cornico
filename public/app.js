@@ -38,6 +38,13 @@ let state = {
 
 const money = value => `${Number(value || 0).toFixed(2)} EUR`;
 const dateTime = value => new Date(value).toLocaleString("sk-SK");
+const fileSizeText = value => {
+  const bytes = Number(value || 0);
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} kB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+};
+const MAX_ATTACHMENT_SIZE = 30 * 1024 * 1024;
 const ORDER_STATUSES = [
   ["nova", "nova objednavka"],
   ["spracovava_sa", "spracovava sa"],
@@ -83,10 +90,14 @@ const escapeHtml = value => String(value || "")
   .replaceAll('"', "&quot;");
 
 async function api(path, options = {}) {
+  const isFormData = options.body instanceof FormData;
   const response = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
     credentials: "same-origin",
-    ...options
+    ...options,
+    headers: {
+      ...(isFormData ? {} : { "Content-Type": "application/json" }),
+      ...(options.headers || {})
+    }
   });
   const contentType = response.headers.get("Content-Type") || "";
   const data = contentType.includes("application/json")
@@ -298,6 +309,34 @@ function renderAnnouncementItem(announcement, isAdmin = false) {
     }));
   }
 
+  const attachments = el("div", { class: "announcement-attachments" });
+  for (const attachment of announcement.attachments || []) {
+    const downloadUrl = `/api/announcement-attachments/${encodeURIComponent(attachment.id)}`;
+    if (attachment.previewable) {
+      attachments.append(el("figure", { class: "attachment-image" }, [
+        el("a", { href: downloadUrl, title: `Stiahnut ${attachment.filename}` }, [
+          el("img", {
+            src: `${downloadUrl}/preview`,
+            alt: attachment.filename,
+            loading: "lazy"
+          })
+        ]),
+        el("figcaption", {}, [
+          el("a", { href: downloadUrl, text: attachment.filename }),
+          el("span", { class: "muted", text: fileSizeText(attachment.sizeBytes) })
+        ])
+      ]));
+    } else {
+      attachments.append(el("div", { class: "attachment-file" }, [
+        el("div", { class: "attachment-name" }, [
+          el("strong", { text: attachment.filename }),
+          el("span", { class: "muted", text: fileSizeText(attachment.sizeBytes) })
+        ]),
+        el("a", { class: "attachment-download", href: downloadUrl, text: "Stiahnut" })
+      ]));
+    }
+  }
+
   return el("article", { class: `announcement-item announcement-${announcement.category} ${announcement.published ? "" : "announcement-hidden"}` }, [
     el("div", { class: "announcement-meta" }, [
       el("span", { class: `announcement-category category-${announcement.category}`, text: announcementCategoryLabel(announcement.category) }),
@@ -309,6 +348,7 @@ function renderAnnouncementItem(announcement, isAdmin = false) {
       actions.length ? el("div", { class: "actions" }, actions) : ""
     ]),
     el("p", { class: "announcement-content", text: announcement.content }),
+    attachments.childElementCount ? attachments : "",
     isAdmin ? el("div", { class: "announcement-author muted", text: `Zverejnil: ${announcement.authorName}` }) : ""
   ]);
 }
@@ -342,20 +382,54 @@ function renderAnnouncementsAdmin() {
     <label class="span-6">Text
       <textarea name="content" required maxlength="10000"></textarea>
     </label>
+    <label class="span-6">Obrazky a prilohy
+      <input name="attachments" type="file" multiple>
+      <span class="field-hint">Najviac 30 MB na jeden subor.</span>
+    </label>
+    <div class="span-6 file-selection muted" aria-live="polite"></div>
     <div class="span-6 actions">
       <button type="submit">Zverejnit informaciu</button>
     </div>
   `;
+  const fileInput = form.elements.attachments;
+  const fileSelection = form.querySelector(".file-selection");
+  fileInput.addEventListener("change", () => {
+    const files = [...fileInput.files];
+    if (files.length > 10) {
+      fileInput.value = "";
+      fileSelection.classList.add("error");
+      fileSelection.textContent = "K jednej informacii je mozne vlozit najviac 10 priloh.";
+      return;
+    }
+    const oversized = files.find(file => file.size > MAX_ATTACHMENT_SIZE);
+    if (oversized) {
+      fileInput.value = "";
+      fileSelection.classList.add("error");
+      fileSelection.textContent = `Subor ${oversized.name} je vacsi ako 30 MB.`;
+      return;
+    }
+    if (files.reduce((sum, file) => sum + file.size, 0) > 100 * 1024 * 1024) {
+      fileInput.value = "";
+      fileSelection.classList.add("error");
+      fileSelection.textContent = "Prilohy spolu nemozu prekrocit 100 MB.";
+      return;
+    }
+    fileSelection.classList.remove("error");
+    fileSelection.textContent = files.length
+      ? files.map(file => `${file.name} (${fileSizeText(file.size)})`).join(" | ")
+      : "";
+  });
   form.addEventListener("submit", async event => {
     event.preventDefault();
     try {
       await api("/api/announcements", {
         method: "POST",
-        body: JSON.stringify(Object.fromEntries(new FormData(form)))
+        body: new FormData(form)
       });
       const { announcements } = await api("/api/announcements");
       state.announcements = announcements;
       form.reset();
+      fileSelection.textContent = "";
       setMessage("Informacia bola zverejnena.");
     } catch (error) {
       setMessage("", error.message);

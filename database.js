@@ -96,8 +96,22 @@ function mapAnnouncement(row) {
     authorName: row.author_name || "Administrator",
     published: Boolean(row.published),
     createdAt: new Date(row.created_at).toISOString(),
-    updatedAt: new Date(row.updated_at).toISOString()
+    updatedAt: new Date(row.updated_at).toISOString(),
+    attachments: []
   };
+}
+
+function mapAnnouncementAttachment(row, includeData = false) {
+  const attachment = {
+    id: row.id,
+    filename: row.filename,
+    mimeType: row.mime_type || "application/octet-stream",
+    sizeBytes: Number(row.size_bytes),
+    previewable: Boolean(row.previewable),
+    createdAt: new Date(row.created_at).toISOString()
+  };
+  if (includeData) attachment.data = row.data;
+  return attachment;
 }
 
 async function createSchema(client = pool) {
@@ -175,10 +189,21 @@ async function createSchema(client = pool) {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+    CREATE TABLE IF NOT EXISTS announcement_attachments (
+      id TEXT PRIMARY KEY,
+      announcement_id TEXT NOT NULL REFERENCES announcements(id) ON DELETE CASCADE,
+      filename TEXT NOT NULL,
+      mime_type TEXT NOT NULL,
+      size_bytes INTEGER NOT NULL,
+      previewable BOOLEAN NOT NULL DEFAULT FALSE,
+      data BYTEA NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
     CREATE INDEX IF NOT EXISTS sessions_expires_at_idx ON sessions(expires_at);
     CREATE INDEX IF NOT EXISTS orders_customer_id_idx ON orders(customer_id);
     CREATE INDEX IF NOT EXISTS order_items_order_id_idx ON order_items(order_id);
     CREATE INDEX IF NOT EXISTS announcements_created_at_idx ON announcements(created_at DESC);
+    CREATE INDEX IF NOT EXISTS announcement_attachments_announcement_id_idx ON announcement_attachments(announcement_id);
   `);
 }
 
@@ -396,16 +421,44 @@ async function updateSettings(settings) {
 async function listAnnouncements(includeHidden = false) {
   const where = includeHidden ? "" : "WHERE published=TRUE";
   const { rows } = await pool.query(`SELECT * FROM announcements ${where} ORDER BY created_at DESC, id DESC`);
-  return rows.map(mapAnnouncement);
+  const announcements = rows.map(mapAnnouncement);
+  if (!announcements.length) return announcements;
+  const { rows: attachmentRows } = await pool.query(`
+    SELECT id,announcement_id,filename,mime_type,size_bytes,previewable,created_at
+    FROM announcement_attachments WHERE announcement_id=ANY($1::text[]) ORDER BY created_at,id
+  `, [announcements.map(announcement => announcement.id)]);
+  const byId = new Map(announcements.map(announcement => [announcement.id, announcement]));
+  for (const row of attachmentRows) byId.get(row.announcement_id)?.attachments.push(mapAnnouncementAttachment(row));
+  return announcements;
 }
 
-async function createAnnouncement(data, author) {
+async function createAnnouncement(data, author, attachments = []) {
   const now = new Date();
-  const { rows } = await pool.query(`
-    INSERT INTO announcements (id,category,title,content,author_id,author_name,published,created_at,updated_at)
-    VALUES ($1,$2,$3,$4,$5,$6,TRUE,$7,$7) RETURNING *
-  `, [crypto.randomUUID(), data.category, data.title, data.content, author.id, author.name, now]);
-  return mapAnnouncement(rows[0]);
+  const id = crypto.randomUUID();
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query(`
+      INSERT INTO announcements (id,category,title,content,author_id,author_name,published,created_at,updated_at)
+      VALUES ($1,$2,$3,$4,$5,$6,TRUE,$7,$7) RETURNING *
+    `, [id, data.category, data.title, data.content, author.id, author.name, now]);
+    const announcement = mapAnnouncement(rows[0]);
+    for (const attachment of attachments) {
+      const attachmentId = crypto.randomUUID();
+      const { rows: attachmentRows } = await client.query(`
+        INSERT INTO announcement_attachments (id,announcement_id,filename,mime_type,size_bytes,previewable,data,created_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *
+      `, [attachmentId, id, attachment.filename, attachment.mimeType, attachment.data.length, attachment.previewable, attachment.data, now]);
+      announcement.attachments.push(mapAnnouncementAttachment(attachmentRows[0]));
+    }
+    await client.query("COMMIT");
+    return announcement;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 async function setAnnouncementPublished(id, published) {
@@ -414,6 +467,17 @@ async function setAnnouncementPublished(id, published) {
     [id, published]
   );
   return rows[0] ? mapAnnouncement(rows[0]) : null;
+}
+
+async function getAnnouncementAttachment(id, user) {
+  const params = [id];
+  const visibility = user.role === "admin" ? "" : "AND a.published=TRUE";
+  const { rows } = await pool.query(`
+    SELECT aa.* FROM announcement_attachments aa
+    JOIN announcements a ON a.id=aa.announcement_id
+    WHERE aa.id=$1 ${visibility}
+  `, params);
+  return rows[0] ? mapAnnouncementAttachment(rows[0], true) : null;
 }
 
 async function createOrder(user, lines, note) {
@@ -527,7 +591,7 @@ async function replaceAllData(data) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    await client.query("TRUNCATE sessions,announcements,order_items,orders,products,users,settings,order_counters RESTART IDENTITY CASCADE");
+    await client.query("TRUNCATE sessions,announcement_attachments,announcements,order_items,orders,products,users,settings,order_counters RESTART IDENTITY CASCADE");
     for (const [key, value] of Object.entries(data.settings || {})) await client.query("INSERT INTO settings (key,value) VALUES ($1,$2)", [key, String(value)]);
     for (const user of data.users || []) {
       const p = user.profile || emptyProfile();
@@ -558,6 +622,6 @@ module.exports = {
   initializeDatabase, createSchema, getUserByUsername, getUserById, getUserBySession,
   createSession, deleteSession, updateProfile, listCustomers, createCustomer, updateCustomer,
   deleteCustomer, listProducts, createProduct, updateProduct, deleteProduct, importProducts,
-  getSettings, updateSettings, listAnnouncements, createAnnouncement, setAnnouncementPublished,
+  getSettings, updateSettings, listAnnouncements, createAnnouncement, setAnnouncementPublished, getAnnouncementAttachment,
   createOrder, listOrders, getOrderById, updateOrder, replaceAllData, close
 };

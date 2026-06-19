@@ -30,6 +30,12 @@ pnpm start
 
 Aplikacia bude dostupna na `http://localhost:3000`.
 
+## Informacie pre zakaznikov
+
+Administrator moze v sekcii `Obsah pre zakaznikov` zverejnovat texty, obrazky a ine prilohy. Podporovane su bezne obrazky, PDF, DOCX, XLSX, CSV a dalsie typy suborov. Overene obrazky sa zakaznikom zobrazia ako male nahlady; kazdu prilohu je mozne stiahnut v povodnej kvalite.
+
+Jedna priloha moze mat najviac 30 MB. K jednej informacii je mozne vlozit najviac 10 priloh s celkovou velkostou do 100 MB. Prilohy su ulozene v PostgreSQL databaze a stiahnut ich moze iba prihlaseny pouzivatel, ktory ma pristup k danej informacii.
+
 ## Prenos existujucej SQLite databazy do Neonu
 
 Migracia cielovu PostgreSQL databazu vymaze a nahradi obsahom `data/app.sqlite`. Pred spustenim preto skontrolujte `DATABASE_URL`.
