@@ -4,7 +4,7 @@ const path = require("path");
 const crypto = require("crypto");
 const db = require("./database");
 const { verifyPassword, hashSessionToken } = require("./auth");
-const { sendOrderEmails, verifySmtp } = require("./email");
+const { sendOrderEmails, verifySmtp, smtpErrorMessage } = require("./email");
 
 const PORT = Number(process.env.PORT) || 3000;
 const ROOT = __dirname;
@@ -123,7 +123,7 @@ function cleanEmailSettings(body, current) {
     smtpFromName: cleanText(body.smtpFromName) || "CORNiCO",
     smtpFromEmail: cleanText(body.smtpFromEmail),
     ownerEmail: cleanText(body.ownerEmail),
-    smtpPassword: cleanText(body.smtpPassword) || current.smtpPassword || ""
+    smtpPassword: cleanText(body.smtpPassword).replace(/\s/g, "") || current.smtpPassword || ""
   };
   return settings;
 }
@@ -338,7 +338,7 @@ async function handleApi(req, res) {
         return sendJson(res, 200, { ok: true });
       } catch (error) {
         console.error("SMTP overenie zlyhalo:", error.message);
-        return sendJson(res, 400, { error: "Pripojenie k e-mailovemu serveru sa nepodarilo. Skontrolujte adresu, port, sifrovanie a prihlasovacie udaje." });
+        return sendJson(res, 400, { error: smtpErrorMessage(error) });
       }
     }
 

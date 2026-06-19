@@ -33,6 +33,26 @@ async function verifySmtp(settings) {
   await transporter.verify();
 }
 
+function smtpErrorMessage(error) {
+  const code = String(error?.code || "").toUpperCase();
+  const responseCode = Number(error?.responseCode || 0);
+  const command = String(error?.command || "").toUpperCase();
+
+  if (code === "EAUTH" || [534, 535].includes(responseCode) || command.includes("AUTH")) {
+    return "Gmail odmietol prihlasenie. Pouzite 16-miestne heslo aplikacie, nie bezne heslo ku Google uctu. Skontrolujte aj celu e-mailovu adresu v poli Prihlasovacie meno.";
+  }
+  if (code === "EDNS") {
+    return "SMTP server sa nenasiel. Skontrolujte adresu servera; pre Gmail pouzite smtp.gmail.com.";
+  }
+  if (["ETIMEDOUT", "ESOCKET", "ECONNECTION", "ECONNREFUSED", "ENETUNREACH"].includes(code)) {
+    return "K SMTP serveru sa nepodarilo pripojit. Skontrolujte port a sifrovanie; hosting moze blokovat odchadzajuce SMTP spojenie.";
+  }
+  if (code === "ETLS" || /CERT|TLS/i.test(String(error?.message || ""))) {
+    return "Nepodarilo sa vytvorit sifrovane spojenie. Pre Gmail nastavte port 587 a STARTTLS.";
+  }
+  return "Pripojenie k e-mailovemu serveru sa nepodarilo. Skontrolujte adresu, port, sifrovanie a prihlasovacie udaje.";
+}
+
 function money(value) {
   return `${Number(value || 0).toFixed(2)} EUR`;
 }
@@ -100,4 +120,4 @@ async function sendOrderEmails(order, settings) {
   return { configured: true, sent: true };
 }
 
-module.exports = { sendOrderEmails, verifySmtp };
+module.exports = { sendOrderEmails, verifySmtp, smtpErrorMessage };
