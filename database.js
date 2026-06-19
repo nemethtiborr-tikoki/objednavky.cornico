@@ -346,6 +346,28 @@ async function getSettings() {
   return Object.fromEntries(rows.map(row => [row.key, row.value]));
 }
 
+async function updateSettings(settings) {
+  const entries = Object.entries(settings);
+  if (!entries.length) return getSettings();
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    for (const [key, value] of entries) {
+      await client.query(`
+        INSERT INTO settings (key,value) VALUES ($1,$2)
+        ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value
+      `, [key, String(value ?? "")]);
+    }
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+  return getSettings();
+}
+
 async function createOrder(user, lines, note) {
   const client = await pool.connect();
   try {
@@ -488,5 +510,5 @@ module.exports = {
   initializeDatabase, createSchema, getUserByUsername, getUserById, getUserBySession,
   createSession, deleteSession, updateProfile, listCustomers, createCustomer, updateCustomer,
   deleteCustomer, listProducts, createProduct, updateProduct, deleteProduct, importProducts,
-  getSettings, createOrder, listOrders, getOrderById, updateOrder, replaceAllData, close
+  getSettings, updateSettings, createOrder, listOrders, getOrderById, updateOrder, replaceAllData, close
 };

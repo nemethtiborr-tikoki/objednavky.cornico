@@ -8,11 +8,18 @@ importers:
 
   .:
     dependencies:
+      nodemailer:
+        specifier: ^9.0.1
+        version: 9.0.1
       pg:
         specifier: ^8.16.3
         version: 8.21.0
 
 packages:
+
+  nodemailer@9.0.1:
+    resolution: {integrity: sha512-Gwv8SQewT616ZM/URn0H54b8PWo/Wum7md3EW2aWy1lO27+WZCX+Xyak3J+NlmHUjDh5ME+uesJUDRbR3Ye8Bw==}
+    engines: {node: '>=6.0.0'}
 
   pg-cloudflare@1.4.0:
     resolution: {integrity: sha512-Vo7z/6rrQYxpNRylp4Tlob2elzbh+N/MOQbxFVWCxS7oEx6jF53GTJFxK2WWpKuBRkmiin4Mt+xofFDjx09R0A==}
@@ -73,6 +80,8 @@ packages:
     engines: {node: '>=0.4'}
 
 snapshots:
+
+  nodemailer@9.0.1: {}
 
   pg-cloudflare@1.4.0:
     optional: true

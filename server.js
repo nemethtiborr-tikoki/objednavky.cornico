@@ -4,6 +4,7 @@ const path = require("path");
 const crypto = require("crypto");
 const db = require("./database");
 const { verifyPassword, hashSessionToken } = require("./auth");
+const { sendOrderEmails, verifySmtp } = require("./email");
 
 const PORT = Number(process.env.PORT) || 3000;
 const ROOT = __dirname;
@@ -91,6 +92,40 @@ function cleanText(value) {
 function cleanNumber(value) {
   const number = Number(value);
   return Number.isFinite(number) ? number : 0;
+}
+
+function cleanBoolean(value) {
+  return value === true || String(value).toLowerCase() === "true";
+}
+
+function publicEmailSettings(settings) {
+  return {
+    smtpEnabled: cleanBoolean(settings.smtpEnabled),
+    smtpHost: settings.smtpHost || "",
+    smtpPort: Number(settings.smtpPort) || 587,
+    smtpSecure: cleanBoolean(settings.smtpSecure),
+    smtpUsername: settings.smtpUsername || "",
+    smtpFromName: settings.smtpFromName || "CORNiCO",
+    smtpFromEmail: settings.smtpFromEmail || "",
+    ownerEmail: settings.ownerEmail || "",
+    hasPassword: Boolean(settings.smtpPassword)
+  };
+}
+
+function cleanEmailSettings(body, current) {
+  const port = Number(body.smtpPort);
+  const settings = {
+    smtpEnabled: cleanBoolean(body.smtpEnabled),
+    smtpHost: cleanText(body.smtpHost),
+    smtpPort: Number.isInteger(port) && port > 0 && port <= 65535 ? port : 587,
+    smtpSecure: cleanBoolean(body.smtpSecure),
+    smtpUsername: cleanText(body.smtpUsername),
+    smtpFromName: cleanText(body.smtpFromName) || "CORNiCO",
+    smtpFromEmail: cleanText(body.smtpFromEmail),
+    ownerEmail: cleanText(body.ownerEmail),
+    smtpPassword: cleanText(body.smtpPassword) || current.smtpPassword || ""
+  };
+  return settings;
 }
 
 function cleanQuantity(value) {
@@ -280,6 +315,33 @@ async function handleApi(req, res) {
       return sendJson(res, 200, { customer: publicUser(customer) });
     }
 
+    if (method === "GET" && url.pathname === "/api/settings/email") {
+      if (!(await requireAdmin(req, res))) return;
+      return sendJson(res, 200, { settings: publicEmailSettings(await db.getSettings()) });
+    }
+
+    if (method === "PUT" && url.pathname === "/api/settings/email") {
+      if (!(await requireAdmin(req, res))) return;
+      const current = await db.getSettings();
+      const settings = cleanEmailSettings(await readBody(req), current);
+      if (settings.smtpEnabled && (!settings.smtpHost || !settings.smtpFromEmail || !settings.ownerEmail)) {
+        return sendJson(res, 400, { error: "Pri zapnutom odosielani vyplnte SMTP server, e-mail odosielatela a e-mail pre prijem objednavok." });
+      }
+      const updated = await db.updateSettings(settings);
+      return sendJson(res, 200, { settings: publicEmailSettings(updated) });
+    }
+
+    if (method === "POST" && url.pathname === "/api/settings/email/test") {
+      if (!(await requireAdmin(req, res))) return;
+      try {
+        await verifySmtp(await db.getSettings());
+        return sendJson(res, 200, { ok: true });
+      } catch (error) {
+        console.error("SMTP overenie zlyhalo:", error.message);
+        return sendJson(res, 400, { error: "Pripojenie k e-mailovemu serveru sa nepodarilo. Skontrolujte adresu, port, sifrovanie a prihlasovacie udaje." });
+      }
+    }
+
     if (method === "GET" && url.pathname === "/api/products") {
       const user = await requireUser(req, res);
       if (!user) return;
@@ -319,8 +381,15 @@ async function handleApi(req, res) {
       if (!user) return;
       const body = await readBody(req);
       const order = await db.createOrder(user, Array.isArray(body.items) ? body.items : [], cleanText(body.note));
-      appendEmailLog(order, user).catch(error => console.error("E-mailovy zaznam sa nepodarilo zapisat:", error.message));
-      return sendJson(res, 201, { order });
+      await appendEmailLog(order, user).catch(error => console.error("E-mailovy zaznam sa nepodarilo zapisat:", error.message));
+      let email = { configured: false, sent: false };
+      try {
+        email = await sendOrderEmails(order, await db.getSettings());
+      } catch (error) {
+        email = { configured: true, sent: false };
+        console.error("Objednavku sa nepodarilo odoslat e-mailom:", error.message);
+      }
+      return sendJson(res, 201, { order, email });
     }
 
     if (method === "GET" && url.pathname === "/api/orders") {

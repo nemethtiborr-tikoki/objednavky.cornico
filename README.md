@@ -62,4 +62,6 @@ pnpm test
 
 ## Poznamka k e-mailom
 
-Aplikacia zatial iba zapisuje simulovany e-mail do `data/emails.log`. Na skutocne odosielanie treba doplnit SMTP alebo transakcnu e-mailovu sluzbu.
+Administrator nastavi SMTP server priamo v sekcii `Nastavenia`. Konfiguracia obsahuje server, port, sifrovanie, prihlasovacie udaje, odosielatela a firemny e-mail pre prijem objednavok. Tlacidlo `Overit pripojenie` skontroluje ulozene nastavenie pred jeho pouzitim.
+
+Po zapnuti SMTP sa nova objednavka odosle zakaznikovi aj na firemny e-mail. Heslo SMTP sa z API nikdy neposiela spat do prehliadaca; prazdne pole hesla pri neskorsej uprave ponecha povodne ulozene heslo.

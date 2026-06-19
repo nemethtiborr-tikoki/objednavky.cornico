@@ -5,6 +5,7 @@ let state = {
   products: [],
   orders: [],
   customers: [],
+  emailSettings: null,
   view: "order",
   selectedOrderId: null,
   orderFilterOpen: false,
@@ -108,11 +109,15 @@ async function refreshData() {
     api("/api/products"),
     api("/api/orders")
   ];
-  if (state.user?.role === "admin") requests.push(api("/api/customers"));
-  const [productsData, ordersData, customersData] = await Promise.all(requests);
+  if (state.user?.role === "admin") {
+    requests.push(api("/api/customers"));
+    requests.push(api("/api/settings/email"));
+  }
+  const [productsData, ordersData, customersData, settingsData] = await Promise.all(requests);
   state.products = productsData.products;
   state.orders = ordersData.orders;
   state.customers = customersData?.customers || [];
+  state.emailSettings = settingsData?.settings || null;
 }
 
 function el(tag, attrs = {}, children = []) {
@@ -173,7 +178,7 @@ function renderLogin() {
 function renderShell() {
   const shell = el("div", { class: "app-shell" });
   const navItems = state.user.role === "admin"
-    ? [["dashboard", "Prehlad"], ["orders", "Historia objednavok"], ["products", "Tovarove polozky"], ["customers", "Zakaznici"]]
+    ? [["dashboard", "Prehlad"], ["orders", "Historia objednavok"], ["products", "Tovarove polozky"], ["customers", "Zakaznici"], ["settings", "Nastavenia"]]
     : [["order", "Nova objednavka"], ["my-orders", "Moje objednavky"], ["profile", "Moj profil"]];
 
   shell.append(
@@ -194,11 +199,19 @@ function renderShell() {
     sidebar.append(el("button", {
       class: `nav-button ${state.view === view ? "active" : ""}`,
       text: label,
-      onclick: () => {
+      onclick: async () => {
         state.view = view;
         if (view !== "orders") state.selectedOrderId = null;
         state.message = "";
         state.error = "";
+        if (view === "my-orders") {
+          try {
+            const { orders } = await api("/api/orders");
+            state.orders = orders;
+          } catch (error) {
+            state.error = error.message;
+          }
+        }
         render();
       }
     }));
@@ -211,6 +224,7 @@ function renderShell() {
   if (state.view === "orders") main.append(renderOrders(true));
   if (state.view === "products") main.append(renderProductsAdmin());
   if (state.view === "customers") main.append(renderCustomersAdmin());
+  if (state.view === "settings") main.append(renderEmailSettings());
   if (state.view === "profile") main.append(renderProfile());
   if (state.printOrder) main.append(renderPrintOrder(state.printOrder));
 
@@ -225,6 +239,7 @@ async function logout() {
     products: [],
     orders: [],
     customers: [],
+    emailSettings: null,
     view: "order",
     selectedOrderId: null,
     orderFilterOpen: false,
@@ -279,13 +294,15 @@ function renderCustomerOrder() {
       quantity: Math.trunc(Number(input.value || 0))
     }));
     try {
-      await api("/api/orders", {
+      const { email } = await api("/api/orders", {
         method: "POST",
         body: JSON.stringify({ note: note.value, items })
       });
       await refreshData();
       state.view = "my-orders";
-      setMessage("Objednavka bola odoslana a zapis e-mailu bol vytvoreny.");
+      if (email?.sent) setMessage("Objednavka bola odoslana a potvrdenie bolo poslane e-mailom.");
+      else if (email?.configured) setMessage("Objednavka bola ulozena, ale e-mail sa nepodarilo odoslat. Administrator moze skontrolovat nastavenia e-mailu.");
+      else setMessage("Objednavka bola odoslana. E-mailove odosielanie zatial nie je zapnute.");
     } catch (error) {
       setMessage("", error.message);
     }
@@ -316,9 +333,27 @@ function renderOrders(isAdmin) {
     return container;
   }
 
+  const tbody = el("tbody");
   for (const order of state.orders) {
-    container.append(renderOrderPanel(order, isAdmin));
+    tbody.append(el("tr", {}, [
+      el("td", { text: order.number }),
+      el("td", { text: dateTime(order.createdAt) }),
+      el("td", {}, el("button", {
+        class: state.selectedOrderId === order.id ? "" : "secondary",
+        text: state.selectedOrderId === order.id ? "Zatvorit" : "Otvorit",
+        onclick: () => {
+          state.selectedOrderId = state.selectedOrderId === order.id ? null : order.id;
+          render();
+        }
+      }))
+    ]));
   }
+  container.append(el("div", { class: "table-wrap customer-orders" }, el("table", {}, [
+    tableHead(["Cislo objednavky", "Datum a cas", "Objednavka"]),
+    tbody
+  ])));
+  const selectedOrder = state.orders.find(order => order.id === state.selectedOrderId);
+  if (selectedOrder) container.append(renderOrderPanel(selectedOrder, false));
   return container;
 }
 
@@ -995,6 +1030,85 @@ function parseCsvBoolean(value) {
   const normalized = String(value || "").trim().toLowerCase();
   if (["nie", "false", "0", "neaktivna", "neaktívna"].includes(normalized)) return false;
   return true;
+}
+
+function renderEmailSettings() {
+  const settings = state.emailSettings || {};
+  const form = el("form", { class: "panel form-grid" });
+  form.innerHTML = `
+    <label class="span-6 checkbox-label">
+      <input name="smtpEnabled" type="checkbox" ${settings.smtpEnabled ? "checked" : ""}>
+      Zapnut odosielanie objednavok e-mailom
+    </label>
+    <label class="span-3">SMTP server
+      <input name="smtpHost" value="${escapeHtml(settings.smtpHost || "")}" placeholder="smtp.firma.sk">
+    </label>
+    <label class="span-3">Port
+      <input name="smtpPort" type="number" min="1" max="65535" value="${escapeHtml(settings.smtpPort || 587)}">
+    </label>
+    <label class="span-3">Zabezpecenie
+      <select name="smtpSecure">
+        <option value="false" ${settings.smtpSecure ? "" : "selected"}>STARTTLS</option>
+        <option value="true" ${settings.smtpSecure ? "selected" : ""}>TLS</option>
+      </select>
+    </label>
+    <label class="span-3">Prihlasovacie meno
+      <input name="smtpUsername" autocomplete="off" value="${escapeHtml(settings.smtpUsername || "")}">
+    </label>
+    <label class="span-3">Heslo
+      <input name="smtpPassword" type="password" autocomplete="new-password" placeholder="${settings.hasPassword ? "Heslo je ulozene" : ""}">
+    </label>
+    <label class="span-3">Nazov odosielatela
+      <input name="smtpFromName" value="${escapeHtml(settings.smtpFromName || "CORNiCO")}">
+    </label>
+    <label class="span-3">E-mail odosielatela
+      <input name="smtpFromEmail" type="email" value="${escapeHtml(settings.smtpFromEmail || "")}">
+    </label>
+    <label class="span-3">E-mail pre prijem objednavok
+      <input name="ownerEmail" type="email" value="${escapeHtml(settings.ownerEmail || "")}">
+    </label>
+    <div class="span-6 actions">
+      <button type="submit">Ulozit nastavenia</button>
+      <button class="secondary" type="button" data-test-smtp="true">Overit pripojenie</button>
+    </div>
+  `;
+
+  const saveSettings = async () => {
+    const values = Object.fromEntries(new FormData(form));
+    values.smtpEnabled = form.elements.smtpEnabled.checked;
+    values.smtpSecure = values.smtpSecure === "true";
+    const { settings: updated } = await api("/api/settings/email", {
+      method: "PUT",
+      body: JSON.stringify(values)
+    });
+    state.emailSettings = updated;
+  };
+
+  form.addEventListener("submit", async event => {
+    event.preventDefault();
+    try {
+      await saveSettings();
+      setMessage("Nastavenia e-mailu boli ulozene.");
+    } catch (error) {
+      setMessage("", error.message);
+    }
+  });
+
+  form.querySelector("[data-test-smtp]").addEventListener("click", async () => {
+    try {
+      await saveSettings();
+      await api("/api/settings/email/test", { method: "POST" });
+      setMessage("Pripojenie k e-mailovemu serveru je v poriadku.");
+    } catch (error) {
+      setMessage("", error.message);
+    }
+  });
+
+  return el("section", { class: "grid" }, [
+    pageTitle("Nastavenia", "E-mailovy server a dorucovanie objednavok."),
+    renderNotice(),
+    form
+  ]);
 }
 
 function renderProfile() {
