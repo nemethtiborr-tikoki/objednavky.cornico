@@ -2,6 +2,15 @@
 
 Objednavacia aplikacia pre zakaznikov a administratora. Produkcne data uklada do PostgreSQL databazy (odporucany Neon) a aplikacia moze bezat na Renderi.
 
+## Projektova dokumentacia
+
+- `README.md` - stabilny popis projektu, instalacia a prevadzka
+- `PROJECT_STATE.md` - aktualny technicky a prevadzkovy stav
+- `CHANGELOG.md` - historia dokoncenych zmien
+- `TODO.md` - prioritizovany plan dalsieho vyvoja
+
+Pri kazdej vyznamnej zmene treba v rovnakom commite aktualizovat prislusne zaznamy v `PROJECT_STATE.md`, `CHANGELOG.md` a `TODO.md`. Tieto subory su zdrojom kontextu pre dalsiu pracu.
+
 ## Poziadavky
 
 - Node.js 22 alebo novsi
